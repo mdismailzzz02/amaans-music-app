@@ -1,13 +1,28 @@
 /**
  * lib/api.ts
- * Client-side API functions — replaces all Next.js API routes.
- * Uses Supabase client SDK directly for DB and Storage operations.
+ * Client-side API functions — pure static frontend.
+ *
+ * Storage: Cloudflare R2
+ *   - Streaming: Direct public R2 URL (bucket is public)
+ *   - Upload/Delete: Via Cloudflare Worker (auth-gated, free)
+ *
+ * Database: Supabase (direct client SDK)
  */
 
 import { createClient } from '@/lib/supabase/client';
 import type { Song } from '@/lib/types';
 
-const STORAGE_BUCKET = 'songs';
+const R2_PUBLIC_URL = (process.env.NEXT_PUBLIC_R2_PUBLIC_URL ?? '').trim().replace(/\/$/, '');
+const WORKER_URL = (process.env.NEXT_PUBLIC_WORKER_URL ?? '').trim().replace(/\/$/, '');
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async function getAuthToken(): Promise<string> {
+  const supabase = createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('Not authenticated');
+  return session.access_token;
+}
 
 // ─── Songs ────────────────────────────────────────────────────────────────────
 
@@ -23,9 +38,20 @@ export async function fetchSongs(): Promise<Song[]> {
 
 export async function deleteSong(id: string, fileKey: string): Promise<void> {
   const supabase = createClient();
+  const token = await getAuthToken();
 
-  // Delete from Storage first
-  await supabase.storage.from(STORAGE_BUCKET).remove([fileKey]);
+  // Delete from R2 via Worker
+  const res = await fetch(`${WORKER_URL}/delete`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-File-Key': fileKey,
+    },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    console.warn('R2 delete failed (continuing):', err);
+  }
 
   // Delete from DB
   const { error } = await supabase.from('songs').delete().eq('id', id);
@@ -41,28 +67,36 @@ export async function uploadSong(
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) throw new Error('Unauthorized');
 
+  const token = await getAuthToken();
+
   onProgress?.(10);
 
-  // Generate a unique path: {userId}/{uuid}.{ext}
+  // Generate a unique storage key: {userId}/{uuid}.{ext}
   const ext = file.name.split('.').pop() || 'mp3';
   const uuid = crypto.randomUUID();
   const fileKey = `${user.id}/${uuid}.${ext}`;
 
   onProgress?.(20);
 
-  // Upload to Supabase Storage
-  const { error: uploadError } = await supabase.storage
-    .from(STORAGE_BUCKET)
-    .upload(fileKey, file, {
-      contentType: file.type || 'audio/mpeg',
-      upsert: false,
-    });
+  // Upload to R2 via Worker
+  const uploadRes = await fetch(`${WORKER_URL}/upload`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-File-Key': fileKey,
+      'X-File-Type': file.type || 'audio/mpeg',
+    },
+    body: file,
+  });
 
-  if (uploadError) throw new Error(uploadError.message);
+  if (!uploadRes.ok) {
+    const err = await uploadRes.json().catch(() => ({}));
+    throw new Error(err.error ?? 'Upload to R2 failed');
+  }
 
   onProgress?.(80);
 
-  // Insert song metadata into DB
+  // Save metadata to Supabase DB
   const { data: song, error: dbError } = await supabase
     .from('songs')
     .insert({
@@ -78,8 +112,11 @@ export async function uploadSong(
     .single();
 
   if (dbError) {
-    // Cleanup orphaned storage file
-    await supabase.storage.from(STORAGE_BUCKET).remove([fileKey]);
+    // Cleanup orphaned R2 file
+    await fetch(`${WORKER_URL}/delete`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}`, 'X-File-Key': fileKey },
+    }).catch(() => {});
     throw new Error(dbError.message);
   }
 
@@ -100,24 +137,19 @@ export async function getStreamUrl(songId: string, fileKey: string): Promise<str
     .single()
     .then(({ data }) => {
       if (data) {
-        supabase.from('songs').update({ play_count: (data.play_count ?? 0) + 1 }).eq('id', songId).then(() => {});
+        supabase
+          .from('songs')
+          .update({ play_count: (data.play_count ?? 0) + 1 })
+          .eq('id', songId)
+          .then(() => {});
       }
     });
 
-  // Strip old R2 bucket prefix if present (e.g. "songs/{userId}/.." → "{userId}/..")
-  // Old R2 keys were stored as "songs/{userId}/{uuid}.mp3"
-  // Supabase Storage keys should be "{userId}/{uuid}.mp3" (bucket name is separate)
-  const storageKey = fileKey.startsWith(`${STORAGE_BUCKET}/`)
-    ? fileKey.slice(STORAGE_BUCKET.length + 1)
-    : fileKey;
+  // Strip old "songs/" R2 prefix if present (legacy migration artifact)
+  const storageKey = fileKey.startsWith('songs/') ? fileKey.slice(6) : fileKey;
 
-  // Create a 1-hour signed URL
-  const { data, error } = await supabase.storage
-    .from(STORAGE_BUCKET)
-    .createSignedUrl(storageKey, 3600);
-
-  if (error || !data?.signedUrl) throw new Error(error?.message ?? 'Failed to get stream URL');
-  return data.signedUrl;
+  if (!R2_PUBLIC_URL) throw new Error('R2_PUBLIC_URL not configured');
+  return `${R2_PUBLIC_URL}/${storageKey}`;
 }
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
@@ -168,7 +200,6 @@ export async function updateProfile(data: Partial<{ is_public: boolean }>): Prom
 
   if (error) {
     if (error.code === 'PGRST116') {
-      // Row doesn't exist yet — insert
       const { data: newProfile, error: insertError } = await supabase
         .from('profiles')
         .insert({ id: user.id, ...data })
