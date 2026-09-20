@@ -3,7 +3,7 @@ services:
     name: amaans-music-app
     env: static
     buildCommand: npm install && npm run build
-    staticPublishPath: out
+    staticPublishPath: dist
     envVars:
       - key: NEXT_PUBLIC_SUPABASE_URL
         sync: false
