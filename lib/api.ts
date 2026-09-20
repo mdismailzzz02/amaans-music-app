@@ -134,18 +134,24 @@ export async function fetchProfile(): Promise<Profile> {
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) throw new Error('Unauthorized');
 
-  // Upsert: create if doesn't exist, return existing if it does
-  const { data: profile, error } = await supabase
+  // Try to fetch existing profile
+  const { data: existing } = await supabase
     .from('profiles')
-    .upsert(
-      { id: user.id, is_public: false },
-      { onConflict: 'id', ignoreDuplicates: true }
-    )
+    .select('*')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (existing) return existing;
+
+  // Profile doesn't exist — create it
+  const { data: newProfile, error: insertError } = await supabase
+    .from('profiles')
+    .insert({ id: user.id, is_public: false })
     .select()
     .single();
 
-  if (error) throw new Error(error.message);
-  return profile;
+  if (insertError) throw new Error(insertError.message);
+  return newProfile;
 }
 
 export async function updateProfile(data: Partial<{ is_public: boolean }>): Promise<Profile> {
