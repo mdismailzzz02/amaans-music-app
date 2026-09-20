@@ -1,14 +1,19 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 
-export const dynamic = 'force-dynamic';
-
 export default function SignupPage() {
   const router = useRouter();
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) router.replace('/library');
+    });
+  }, [router]);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
