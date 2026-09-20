@@ -2,17 +2,9 @@ const path = require('path');
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'export',
   images: {
-    remotePatterns: [
-      {
-        protocol: 'https',
-        hostname: '**.r2.dev',
-      },
-      {
-        protocol: 'https',
-        hostname: '**.r2.cloudflarestorage.com',
-      },
-    ],
+    unoptimized: true, // Required for static export
   },
   webpack: (config) => {
     config.resolve.alias['@'] = path.resolve(__dirname);

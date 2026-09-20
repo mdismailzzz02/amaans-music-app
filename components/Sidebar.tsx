@@ -5,7 +5,6 @@ import { usePathname, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useEffect, useState } from 'react';
 
-export const dynamic = 'force-dynamic';
 
 const navItems = [
   {

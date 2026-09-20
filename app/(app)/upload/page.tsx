@@ -2,8 +2,7 @@
 
 import { useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-
-export const dynamic = 'force-dynamic';
+import { uploadSong } from '@/lib/api';
 
 interface UploadFormData {
   title: string;
@@ -80,34 +79,25 @@ export default function UploadPage() {
     const duration = await getAudioDuration(state.file);
     setState(s => ({ ...s, progress: 15 }));
 
-    const formData = new FormData();
-    formData.append('file', state.file);
-    formData.append('title', form.title || state.file.name.replace(/\.[^/.]+$/, ''));
-    formData.append('artist', form.artist || 'Unknown Artist');
-    formData.append('album', form.album || 'Unknown Album');
-    formData.append('duration', String(duration));
-
-    // Simulate progress (real upload doesn't expose progress in fetch API easily)
-    const progressInterval = setInterval(() => {
-      setState(s => ({
-        ...s,
-        progress: s.progress < 85 ? s.progress + Math.random() * 15 : s.progress,
-      }));
-    }, 400);
-
-    const res = await fetch('/api/upload', { method: 'POST', body: formData });
-    clearInterval(progressInterval);
-
-    if (res.ok) {
+    try {
+      await uploadSong(
+        state.file,
+        {
+          title: form.title || state.file.name.replace(/\.[^/.]+$/, ''),
+          artist: form.artist || 'Unknown Artist',
+          album: form.album || 'Unknown Album',
+          duration,
+        },
+        (pct) => setState(s => ({ ...s, progress: pct }))
+      );
       setState(s => ({ ...s, progress: 100, uploading: false, success: true }));
       setTimeout(() => router.push('/library'), 1500);
-    } else {
-      const data = await res.json().catch(() => ({}));
+    } catch (err: any) {
       setState(s => ({
         ...s,
         uploading: false,
         progress: 0,
-        error: data.error || 'Upload failed. Please try again.',
+        error: err?.message || 'Upload failed. Please try again.',
       }));
     }
   }, [state.file, form, router]);
@@ -249,7 +239,7 @@ export default function UploadPage() {
             {state.uploading && (
               <div style={{ marginTop: 24 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-                  <span>Uploading to Cloudflare R2…</span>
+                  <span>Uploading to Supabase Storage…</span>
                   <span>{Math.round(state.progress)}%</span>
                 </div>
                 <div className="progress-bar-container">

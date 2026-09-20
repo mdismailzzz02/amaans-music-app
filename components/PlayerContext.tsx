@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useRef, useState, useCallback, useEffect } from 'react';
 import type { Song } from '@/lib/types';
+import { getStreamUrl } from '@/lib/api';
 
 interface PlayerState {
   currentSong: Song | null;
@@ -73,14 +74,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setCurrentTime(0);
     setDuration(0);
 
-    // Fetch signed URL from our API
-    const res = await fetch(`/api/stream/${song.id}`);
-    if (!res.ok) return;
-    const { url } = await res.json();
-
-    audio.src = url;
-    audio.dataset.songId = song.id;
-    audio.play().catch(console.error);
+    // Get signed URL directly from Supabase Storage
+    try {
+      const url = await getStreamUrl(song.id, song.file_key);
+      audio.src = url;
+      audio.dataset.songId = song.id;
+      audio.play().catch(console.error);
+    } catch (err) {
+      console.error('Failed to get stream URL:', err);
+    }
   }, []);
 
   const playSong = useCallback((song: Song, songQueue?: Song[]) => {

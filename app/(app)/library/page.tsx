@@ -4,8 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import type { Song } from '@/lib/types';
 import { usePlayer } from '@/components/PlayerContext';
-
-export const dynamic = 'force-dynamic';
+import { fetchSongs, deleteSong, fetchProfile, updateProfile } from '@/lib/api';
 
 function formatTime(seconds: number): string {
   if (!seconds || !isFinite(seconds)) return '--:--';
@@ -33,20 +32,12 @@ export default function LibraryPage() {
 
   const fetchSongsAndProfile = useCallback(async () => {
     try {
-      const [songsRes, profileRes] = await Promise.all([
-        fetch('/api/songs'),
-        fetch('/api/profile')
+      const [songs, profile] = await Promise.all([
+        fetchSongs(),
+        fetchProfile()
       ]);
-      
-      if (songsRes.ok) {
-        const { songs } = await songsRes.json();
-        setSongs(songs ?? []);
-      }
-      
-      if (profileRes.ok) {
-        const { profile } = await profileRes.json();
-        if (profile) setIsPublic(profile.is_public);
-      }
+      setSongs(songs);
+      if (profile) setIsPublic(profile.is_public);
     } catch (err) {
       console.error('Failed to load data:', err);
     } finally {
@@ -56,15 +47,18 @@ export default function LibraryPage() {
 
   useEffect(() => { fetchSongsAndProfile(); }, [fetchSongsAndProfile]);
 
-  async function handleDelete(id: string, e: React.MouseEvent) {
+  async function handleDelete(id: string, fileKey: string, e: React.MouseEvent) {
     e.stopPropagation();
     if (!confirm('Remove this song?')) return;
     setDeletingId(id);
-    const res = await fetch(`/api/songs?id=${id}`, { method: 'DELETE' });
-    if (res.ok) {
+    try {
+      await deleteSong(id, fileKey);
       setSongs(prev => prev.filter(s => s.id !== id));
+    } catch (err) {
+      console.error('Delete failed:', err);
+    } finally {
+      setDeletingId(null);
     }
-    setDeletingId(null);
   }
 
   function handlePlay(song: Song) {
@@ -75,18 +69,10 @@ export default function LibraryPage() {
     setIsUpdatingPublic(true);
     const newStatus = !isPublic;
     try {
-      const res = await fetch('/api/profile', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_public: newStatus })
-      });
-      if (res.ok) {
-        setIsPublic(newStatus);
-      } else {
-        alert('Failed to update library visibility');
-      }
+      await updateProfile({ is_public: newStatus });
+      setIsPublic(newStatus);
     } catch (err) {
-      alert('Network error');
+      alert('Failed to update library visibility');
     } finally {
       setIsUpdatingPublic(false);
     }
@@ -225,7 +211,7 @@ export default function LibraryPage() {
                   <button
                     id={`delete-${song.id}`}
                     className="btn btn-icon btn-danger"
-                    onClick={(e) => handleDelete(song.id, e)}
+                    onClick={(e) => handleDelete(song.id, song.file_key, e)}
                     disabled={deletingId === song.id}
                     aria-label="Delete song"
                     title="Delete song"
@@ -306,7 +292,7 @@ export default function LibraryPage() {
                   id={`list-delete-${song.id}`}
                   className="btn btn-icon btn-danger"
                   style={{ opacity: 0.6 }}
-                  onClick={(e) => handleDelete(song.id, e)}
+                  onClick={(e) => handleDelete(song.id, song.file_key, e)}
                   disabled={deletingId === song.id}
                   aria-label="Delete song"
                 >
