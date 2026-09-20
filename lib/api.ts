@@ -104,10 +104,17 @@ export async function getStreamUrl(songId: string, fileKey: string): Promise<str
       }
     });
 
+  // Strip old R2 bucket prefix if present (e.g. "songs/{userId}/.." → "{userId}/..")
+  // Old R2 keys were stored as "songs/{userId}/{uuid}.mp3"
+  // Supabase Storage keys should be "{userId}/{uuid}.mp3" (bucket name is separate)
+  const storageKey = fileKey.startsWith(`${STORAGE_BUCKET}/`)
+    ? fileKey.slice(STORAGE_BUCKET.length + 1)
+    : fileKey;
+
   // Create a 1-hour signed URL
   const { data, error } = await supabase.storage
     .from(STORAGE_BUCKET)
-    .createSignedUrl(fileKey, 3600);
+    .createSignedUrl(storageKey, 3600);
 
   if (error || !data?.signedUrl) throw new Error(error?.message ?? 'Failed to get stream URL');
   return data.signedUrl;
@@ -127,22 +134,15 @@ export async function fetchProfile(): Promise<Profile> {
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) throw new Error('Unauthorized');
 
-  let { data: profile, error } = await supabase
+  // Upsert: create if doesn't exist, return existing if it does
+  const { data: profile, error } = await supabase
     .from('profiles')
-    .select('*')
-    .eq('id', user.id)
+    .upsert(
+      { id: user.id, is_public: false },
+      { onConflict: 'id', ignoreDuplicates: true }
+    )
+    .select()
     .single();
-
-  if (error && error.code === 'PGRST116') {
-    // Profile not found — create it
-    const { data: newProfile, error: insertError } = await supabase
-      .from('profiles')
-      .insert({ id: user.id, is_public: false })
-      .select()
-      .single();
-    if (insertError) throw new Error(insertError.message);
-    return newProfile;
-  }
 
   if (error) throw new Error(error.message);
   return profile;
